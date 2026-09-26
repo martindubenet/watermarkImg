@@ -20,16 +20,17 @@ Workflow:
        width (no upper limit, floor of MIN_WM_WIDTH), render/resize the
        watermark to that width, composite it into the bottom-left corner,
        flatten the result onto an opaque background, and save it next to
-       the original with a "___photo-MartinDube" suffix inserted before the
-       extension (e.g. photo.jpg -> photo___photo-MartinDube.jpg). When the
+       the original with a " __photo-MartinDube" suffix inserted before the
+       extension (e.g. photo.jpg -> "photo __photo-MartinDube.jpg"), plus "_s"
+       when "Resize for sharing" is on ("photo __photo-MartinDube_s.jpg"). When the
        "Add date created" option is on, the capture date is added as
        "YYMMDD-HHhMM" (or "YYMMDD"), separated by a space, before the name
-       (default, e.g. "260925-14h32 photo___photo-MartinDube.jpg") or after
-       the suffix (e.g. "photo___photo-MartinDube 260925-14h32.jpg").
+       (default, e.g. "260925-14h32 photo __photo-MartinDube_s.jpg") or after
+       the suffix (e.g. "photo __photo-MartinDube_s 260925-14h32.jpg").
        Originals are left untouched.
 
        HEIC/HEIF/AVIF inputs are decoded fine, but are always written back
-       out as lossless PNG24 (photo.heic -> photo___photo-MartinDube.png): encoding
+       out as lossless PNG24 (photo.heic -> "photo __photo-MartinDube.png"): encoding
        back to those formats needs extra licensed encoders that aren't
        reliably available, so PNG is used as the practical, always-available,
        compression-free output. See OUTPUT_FORMAT_OVERRIDE below to change this.
@@ -72,7 +73,8 @@ MARGIN_PX = 20          # distance from the bottom-left corner, in px.
                         # Not specified in the original brief -- tweak freely.
 FLATTEN_BG = (255, 255, 255)  # background color used when flattening transparency
 
-WATERMARK_SUFFIX = "___photo-MartinDube"  # appended to the original file stem
+WATERMARK_SUFFIX = " __photo-MartinDube"  # appended to the original file stem (leading space)
+RESIZE_SUFFIX = "_s"                      # appended to WATERMARK_SUFFIX when "Resize for sharing" is on
 DATE_FORMAT_FULL = "%y%m%d-%Hh%M"         # YYMMDD-HHhMM (lowercase "h" = "heure")
 DATE_FORMAT_DAY = "%y%m%d"                # YYMMDD, when hours/minutes are turned off
 DATE_SEPARATOR = " "                      # between the file name part and the date stamp
@@ -553,8 +555,10 @@ def get_date_created(image_path: Path, img: Image.Image) -> datetime:
 
 
 def build_output_name(stem: str, out_ext: str, taken_at: Optional[datetime], options: NamingOptions) -> str:
-    """Build '<stem>___photo-MartinDube[ YYMMDD-HHhMM]<ext>' (date before or after, per options)."""
+    """Build '<stem> __photo-MartinDube[_s][ YYMMDD-HHhMM]<ext>' (date before or after, per options)."""
     name = f"{stem}{WATERMARK_SUFFIX}"
+    if options.resize:
+        name += RESIZE_SUFFIX
     if options.add_date and taken_at is not None:
         stamp = taken_at.strftime(DATE_FORMAT_FULL if options.include_time else DATE_FORMAT_DAY)
         if options.position == "before":
@@ -764,7 +768,7 @@ def resize_for_sharing(img: Image.Image) -> Image.Image:
 
 
 def apply_watermark(image_path: Path, wm_path: Path, cache: dict, options: NamingOptions) -> Path:
-    """Composite the watermark onto one image, flatten, and save as <name>___photo-MartinDube[ date]<ext>."""
+    """Composite the watermark onto one image, flatten, and save as <name> __photo-MartinDube[_s][ date]<ext>."""
     source = open_image(image_path)
     # Read the capture date before convert(), which drops the EXIF metadata.
     taken_at = get_date_created(image_path, source) if options.add_date else None

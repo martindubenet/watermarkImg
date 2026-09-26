@@ -67,7 +67,7 @@ C'est tout — pas d'icône à dessiner, pas de bundle à signer, Automator s'oc
    - Clique **Cancel** pour tout annuler : le script s'arrête sans aucun message.
 4. Le script traite toutes les images sélectionnées et affiche un résumé à la fin.
 
-Chaque image d'origine reste intacte ; une copie watermarquée est créée à côté, par ex. `photo.jpg` → `photo___photo-MartinDube.jpg`.
+Chaque image d'origine reste intacte ; une copie watermarquée est créée à côté, par ex. `photo.jpg` → `photo __photo-MartinDube_s.jpg`.
 
 ### Options (zone de gauche) : ajouter la date de prise de vue
 
@@ -79,10 +79,10 @@ Chaque image d'origine reste intacte ; une copie watermarquée est créée à c�
 
 Exemples pour `photo.jpg` prise le 25 septembre 2026 à 14 h 32 :
 
-- Before (par défaut) : `260925-14h32 photo___photo-MartinDube.jpg`
-- After : `photo___photo-MartinDube 260925-14h32.jpg`
-- Sans heures et minutes : `260925 photo___photo-MartinDube.jpg`
-- Add date created à OFF : `photo___photo-MartinDube.jpg`
+- Before (par défaut) : `260925-14h32 photo __photo-MartinDube_s.jpg`
+- After : `photo __photo-MartinDube_s 260925-14h32.jpg`
+- Sans heures et minutes : `260925 photo __photo-MartinDube_s.jpg`
+- Add date created à OFF : `photo __photo-MartinDube_s.jpg`
 
 La date est lue dans les métadonnées EXIF de la photo (`DateTimeOriginal`, le moment de la prise). Si l'image n'a pas d'EXIF (capture d'écran, export web…), c'est la date de création du fichier qui est utilisée.
 
@@ -93,11 +93,12 @@ Le suffixe et les formats de date se modifient en haut du script : `WATERMARK_SU
 Case **Resize for sharing**, cochée par défaut. Elle réduit l'image pour que son plus grand côté fasse au maximum **1350 px** : la hauteur pour une photo en portrait, la largeur pour une photo en paysage. Les proportions sont conservées, et une image déjà plus petite n'est jamais agrandie.
 
 - Quand la switch **Add date created** est à OFF, la phrase explicative est masquée aussi : les deux zones ne montrent plus que leur première ligne. La case reste cliquable.
+- Quand l'option est cochée, `_s` est ajouté au suffixe : `photo __photo-MartinDube_s.jpg` (décochée : `photo __photo-MartinDube.jpg`).
 - La réduction se fait avant l'ajout du watermark, qui est donc dimensionné sur l'image finale (15 % de sa largeur).
 - Les dimensions enregistrées dans l'EXIF (`PixelXDimension` / `PixelYDimension`) sont mises à jour.
 - La limite se modifie en haut du script avec `RESIZE_MAX_LONG_SIDE`. Le texte de la fenêtre se met à jour tout seul.
 
-**Cas particulier HEIC / HEIF / AVIF :** ces formats sont lus sans problème, mais la copie watermarquée est toujours enregistrée en `.png` (PNG24, sans perte) plutôt que dans le format d'origine (ex. `IMG_1234.heic` → `260925-14h32 IMG_1234___photo-MartinDube.png`). Ré-encoder proprement en HEIC/AVIF demande des encodeurs supplémentaires peu fiables à installer, alors que PNG évite toute compression avec perte. Si tu veux ensuite convertir ces PNG en AVIF, XnConvert.app en lot fait très bien le travail.
+**Cas particulier HEIC / HEIF / AVIF :** ces formats sont lus sans problème, mais la copie watermarquée est toujours enregistrée en `.png` (PNG24, sans perte) plutôt que dans le format d'origine (ex. `IMG_1234.heic` → `260925-14h32 IMG_1234 __photo-MartinDube_s.png`). Ré-encoder proprement en HEIC/AVIF demande des encodeurs supplémentaires peu fiables à installer, alors que PNG évite toute compression avec perte. Si tu veux ensuite convertir ces PNG en AVIF, XnConvert.app en lot fait très bien le travail.
 
 ## Rappel des règles appliquées par le script
 

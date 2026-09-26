@@ -35,3 +35,4 @@ Claude outputs/*
 public/assets/img/portfolio/**/*.png
 public/assets/img/portfolio/**/*.jpg
 public/assets/img/portfolio/**/*.jpeg
+__pycache__/
