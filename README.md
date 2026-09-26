@@ -2,6 +2,8 @@
 
 Ajoute un watermark (SVG ou PNG24) en bas à gauche d'un lot d'images, directement depuis le Finder.
 
+<img width="50%" src="screenshot_AddWatermark-macOS-modal.avif" alt="Screenshot">
+
 ## 1. Installer les dépendances (une seule fois)
 
 Ouvre ton logiciel Terminal et lance :
