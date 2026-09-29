@@ -1,10 +1,10 @@
-# Watermark batch — Quick Action Automator
+# Watermark batch — Quick Action Automator <img width="48px" src="https://static.wikia.nocookie.net/ipod/images/a/ab/Automator.png/revision/latest?cb=20160908152407" alt="Otto l’Automator" />
 
 [English](README.md) · **Français**
 
 Ajoute un watermark (SVG ou PNG24) en bas à gauche d'un lot d'images, directement depuis le Finder.
 
-<img width="50%" src="screenshot_AddWatermark-macOS-modal.avif" alt="Screenshot">
+<img width="60%" src="screenshot_AddWatermark-macOS-modal.avif" alt="Screenshot" />
 
 ## 1. Installer les dépendances (une seule fois)
 
