@@ -1,144 +1,164 @@
-# Watermark batch — Quick Action Automator
+# Watermark batch — Automator Quick Action
 
-Ajoute un watermark (SVG ou PNG24) en bas à gauche d'un lot d'images, directement depuis le Finder.
+**English** · [Français](README_fr.md)
+
+Adds a watermark (SVG or PNG24) to the bottom-left corner of a batch of images, straight from the Finder.
 
 <img width="50%" src="screenshot_AddWatermark-macOS-modal.avif" alt="Screenshot">
 
-## 1. Installer les dépendances (une seule fois)
+## 1. Install the dependencies (once)
 
-Ouvre ton logiciel Terminal et lance :
+Open your Terminal app and run:
 
 ```bash
-# Homebrew doit déjà être installé (sinon : https://brew.sh)
-brew install librsvg          # fournit rsvg-convert, pour rasteriser le SVG
+# Homebrew must already be installed (otherwise: https://brew.sh)
+brew install librsvg          # provides rsvg-convert, to rasterize the SVG
 
-which python3                 # note le chemin retourné, ex: /opt/homebrew/bin/python3
-pip3 install -U Pillow        # librairie de traitement d'image (version 11+ requise pour l'XMP des JPEG)
-pip3 install pillow-heif      # support de lecture HEIC/HEIF/AVIF (photos iPhone)
+which python3                 # note the returned path, e.g. /opt/homebrew/bin/python3
+pip3 install -U Pillow        # image processing library (version 11+ required for JPEG XMP)
+pip3 install pillow-heif      # HEIC/HEIF/AVIF read support (iPhone photos)
 ```
 
-`pillow-heif` embarque généralement sa propre copie de `libheif` dans le paquet Python — pas besoin d'installer quoi que ce soit via Homebrew pour ça. Si jamais `pip3 install pillow-heif` échoue en essayant de compiler depuis les sources, lance `brew install libheif` puis relance la commande pip.
+`pillow-heif` usually ships its own copy of `libheif` inside the Python package, so there is nothing to install through Homebrew for it. If `pip3 install pillow-heif` ever fails while trying to build from source, run `brew install libheif`, then run the pip command again.
 
-Garde en note le chemin exact retourné par `which python3` — tu en auras besoin à l'étape 3.
+Write down the exact path returned by `which python3`: you will need it in step 3.
 
-> Tu as déjà un alias `cdscript` dans ton `.zshrc` qui pointe vers ce dossier (`/Volumes/usbgt7/aiScripts`) — utilise-le pour t'y déplacer en Terminal si tu veux lancer les commandes ci-dessus directement depuis ce dossier. Note que cet alias est propre à ton Terminal interactif : Automator ne le voit pas (voir étape 2 ci-dessous), il reste donc utile seulement pour ton usage manuel.
+> You already have a `cdscript` alias in your `.zshrc` that points to this folder (`/Volumes/usbgt7/aiScripts`). Use it to move there in Terminal if you want to run the commands above from this folder. Note that this alias only exists in your interactive Terminal: Automator doesn't see it (see step 2 below), so it is only useful for manual use.
 
-## 2. Créer un lien symbolique vers le script (déjà sur le disque externe)
+## 2. Create a symbolic link to the script (already on the external drive)
 
-Chez toi, le script vit en permanence sur le disque externe, dans `/Volumes/usbgT7/aiScripts/watermarkImg/` — inutile de le déplacer ou d'en faire une copie. Mais Automator référence le script par un chemin absolu sous `$HOME` (voir étape 3.6) et ne charge pas les alias de ton `.zshrc` (comme `cdscript`), donc il ne peut pas retrouver le disque externe tout seul.
+The script lives permanently on the external drive, in `/Volumes/usbgT7/aiScripts/watermarkImg/`, so there is no need to move or copy it. But Automator refers to the script by an absolute path under `$HOME` (see step 3.6) and doesn't load the aliases from your `.zshrc` (such as `cdscript`), so it can't find the external drive on its own.
 
-La solution, à faire une seule fois dans ton logiciel Terminal :
+The fix, to do once in your Terminal app:
 
 ```bash
 ln -s /Volumes/usbgT7/aiScripts ~/aiScripts
 chmod +x ~/aiScripts/watermarkImg/add_watermark.py
 ```
 
-Ce lien fait pointer `~/aiScripts/watermarkImg/add_watermark.py` (le chemin utilisé par Automator à l'étape 3.6) directement vers le fichier réel sur `usbgT7` — une seule source de vérité, pas de copie à maintenir à jour. Si le disque `usbgT7` n'est pas branché, le lien restera en place mais cassé jusqu'à ce que tu le reconnectes.
+This link makes `~/aiScripts/watermarkImg/add_watermark.py` (the path used by Automator in step 3.6) point directly to the real file on `usbgT7`: a single source of truth, no copy to keep up to date. If the `usbgT7` drive is not plugged in, the link stays in place but is broken until you reconnect the drive.
 
-## 3. Créer la Quick Action dans Automator
+## 3. Create the Quick Action in Automator
 
-1. Ouvre **Automator** (Spotlight → « Automator »).
-2. **Fichier > Nouveau**, choisis **Quick Action** (ou « Action rapide »).
-3. En haut du document, règle :
+1. Open **Automator** (Spotlight → "Automator").
+2. **File > New**, choose **Quick Action**.
+3. At the top of the document, set:
    - **Workflow receives current** → **image files**
    - **in** → **Finder**
-4. Dans la bibliothèque d'actions à gauche, cherche **Run Shell Script** (« Exécuter un script Shell ») et glisse-la dans la zone de droite.
-5. Dans cette action, règle :
+4. In the actions library on the left, search for **Run Shell Script** and drag it into the area on the right.
+5. In this action, set:
    - **Shell** → `/bin/zsh`
    - **Pass input** → **as arguments**
-6. Toujours dans Automator, remplace le contenu de la boîte de script (de l'action **Run Shell Script**) par (en remplaçant le chemin de `python3` par celui noté à l'étape 1) :
+6. Still in Automator, replace the content of the script box (in the **Run Shell Script** action) with the following (replacing the `python3` path with the one you noted in step 1):
 
    ```bash
    /opt/homebrew/bin/python3 "$HOME/aiScripts/watermarkImg/add_watermark.py" "$@"
    ```
 
-   (Ce chemin fonctionne grâce au lien symbolique créé à l'étape 2 — il pointe vers le fichier réel sur `usbgT7`.)
+   (This path works thanks to the symbolic link created in step 2: it points to the real file on `usbgT7`.)
 
-7. **Fichier > Enregistrer**, donne-lui un nom clair, ex. **Ajouter watermark**.
+7. **File > Save**, and give it a clear name, e.g. **Add watermark**.
 
-C'est tout — pas d'icône à dessiner, pas de bundle à signer, Automator s'occupe de tout créer proprement dans `~/Library/Services/`.
+That's it: no icon to draw, no bundle to sign. Automator takes care of creating everything properly in `~/Library/Services/`.
 
-## 4. Utilisation
+## 4. Usage
 
-1. Dans le Finder, sélectionne une ou plusieurs images (jpg, jpeg, png, webp, heic, heif, avif, tif, tiff, bmp).
-2. Clic droit → **Services** (ou directement dans le menu contextuel selon la version de macOS) → **Ajouter watermark**.
-3. La fenêtre **Add Watermark** te demande de choisir le fichier SVG (ou PNG24) du watermark. Au bas de cette même fenêtre, des options permettent de régler le nom des fichiers générés (voir ci-dessous).
-   - Clique **Cancel** pour tout annuler : le script s'arrête sans aucun message.
-4. Le script traite toutes les images sélectionnées et affiche un résumé à la fin.
+1. In the Finder, select one or more images (jpg, jpeg, png, webp, heic, heif, avif, tif, tiff, bmp).
+2. Right-click → **Services** (or directly in the contextual menu, depending on your macOS version) → **Add watermark**.
+3. The **Add Watermark** window asks you to choose the watermark SVG (or PNG24) file. At the bottom of that same window, options let you set how the generated files are named (see below).
+   - Click **Cancel** to abort everything: the script stops without any message.
+4. The script processes all the selected images and shows a summary at the end.
 
-Chaque image d'origine reste intacte ; une copie watermarquée est créée à côté, par ex. `photo.jpg` → `photo __photo-MartinDube_s.jpg`.
+Each original image stays untouched; a watermarked copy is created next to it. For example, with the watermark `ma signature photo.svg`: `photo.jpg` → `photo __ma-signature-photo_s.jpg`.
 
-### Options (zone de gauche) : ajouter la date de prise de vue
+### Suffix: the watermark file name
 
-| Option | Par défaut | Effet |
+The suffix added to the copy's name is the name of the chosen watermark file (without its extension), preceded by a space and two underscores (` __`). This name is first cleaned up to be compatible with the macOS file system:
+
+1. Every character that is neither a letter nor a digit (space, punctuation, symbol, character rejected by macOS such as `:` or `/`) becomes a hyphen `-`.
+2. Consecutive hyphens (coming from a double space or `--`, for example) are reduced to a single `-`.
+3. Leading and trailing hyphens are removed. Accented letters are kept.
+
+| Watermark file | Resulting suffix |
+| --- | --- |
+| `ma signature photo.svg` | ` __ma-signature-photo` |
+| `logo  (v2)--final.png` | ` __logo-v2-final` |
+| `Signé Martin_Dubé!!.svg` | ` __Signé-Martin-Dubé` |
+
+Example: `fileName.jpg` + `ma signature photo.svg` → `fileName __ma-signature-photo.jpg`, or `fileName __ma-signature-photo_s.jpg` with **Resize for sharing** checked.
+
+If the cleaned-up name is empty (e.g. a file named `...svg`), the suffix `watermark` is used instead.
+
+### Options (left area): add the capture date
+
+| Option | Default | Effect |
 | --- | --- | --- |
-| **Add date created** (switch) | ON | Ajoute la date de prise de vue au nom du fichier, séparée par une espace. À OFF, les deux sous-options sont masquées et la boîte se réduit à cette seule ligne. |
-| 1. **Position relative to file name** : Before / After | Before | Place la date au début du nom (Before) ou après le suffixe (After). |
-| 2. **Include hours and minutes** | coché | Format `YYMMDD-HHhMM` (le « h » minuscule sépare l'heure des minutes). Décoché : `YYMMDD` seulement. |
+| **Add date created** (switch) | ON | Adds the capture date to the file name, separated by a space. When OFF, both sub-options are hidden and the box shrinks to this single line. |
+| 1. **Position relative to file name**: Before / After | Before | Puts the date at the start of the name (Before) or after the suffix (After). |
+| 2. **Include hours and minutes** | checked | Format `YYMMDD-HHhMM` (the lowercase "h" separates hours from minutes). Unchecked: `YYMMDD` only. |
 
-Exemples pour `photo.jpg` prise le 25 septembre 2026 à 14 h 32 :
+Examples for `photo.jpg` taken on September 25, 2026 at 2:32 PM:
 
-- Before (par défaut) : `260925-14h32 photo __photo-MartinDube_s.jpg`
-- After : `photo __photo-MartinDube_s 260925-14h32.jpg`
-- Sans heures et minutes : `260925 photo __photo-MartinDube_s.jpg`
-- Add date created à OFF : `photo __photo-MartinDube_s.jpg`
+- Before (default): `260925-14h32 photo __ma-signature-photo_s.jpg`
+- After: `photo __ma-signature-photo_s 260925-14h32.jpg`
+- Without hours and minutes: `260925 photo __ma-signature-photo_s.jpg`
+- Add date created OFF: `photo __ma-signature-photo_s.jpg`
 
-La date est lue dans les métadonnées EXIF de la photo (`DateTimeOriginal`, le moment de la prise). Si l'image n'a pas d'EXIF (capture d'écran, export web…), c'est la date de création du fichier qui est utilisée.
+The date is read from the photo's EXIF metadata (`DateTimeOriginal`, the moment the shot was taken). If the image has no EXIF (screenshot, web export…), the file's creation date is used instead.
 
-Le suffixe et les formats de date se modifient en haut du script : `WATERMARK_SUFFIX`, `DATE_FORMAT_FULL`, `DATE_FORMAT_DAY`, `DATE_SEPARATOR`.
+The suffix separator and the date formats can be changed at the top of the script: `WATERMARK_SUFFIX_PREFIX`, `DATE_FORMAT_FULL`, `DATE_FORMAT_DAY`, `DATE_SEPARATOR`.
 
-### Option (zone de droite) : Resize for sharing
+### Option (right area): Resize for sharing
 
-Case **Resize for sharing**, cochée par défaut. Elle réduit l'image pour que son plus grand côté fasse au maximum **1350 px** : la hauteur pour une photo en portrait, la largeur pour une photo en paysage. Les proportions sont conservées, et une image déjà plus petite n'est jamais agrandie.
+**Resize for sharing** checkbox, checked by default. It scales the image down so its longer side is at most **1350 px**: the height for a portrait photo, the width for a landscape photo. Proportions are kept, and an image that is already smaller is never enlarged.
 
-- Quand la switch **Add date created** est à OFF, la phrase explicative est masquée aussi : les deux zones ne montrent plus que leur première ligne. La case reste cliquable.
-- Quand l'option est cochée, `_s` est ajouté au suffixe : `photo __photo-MartinDube_s.jpg` (décochée : `photo __photo-MartinDube.jpg`).
-- La réduction se fait avant l'ajout du watermark, qui est donc dimensionné sur l'image finale (15 % de sa largeur).
-- Les dimensions enregistrées dans l'EXIF (`PixelXDimension` / `PixelYDimension`) sont mises à jour.
-- La limite se modifie en haut du script avec `RESIZE_MAX_LONG_SIDE`. Le texte de la fenêtre se met à jour tout seul.
+- When the **Add date created** switch is OFF, the explanatory sentence is hidden too: both areas only show their first line. The checkbox stays clickable.
+- When the option is checked, `_s` is added to the suffix: `photo __ma-signature-photo_s.jpg` (unchecked: `photo __ma-signature-photo.jpg`).
+- The resize happens before the watermark is added, so the watermark is sized on the final image (15% of its width).
+- The dimensions stored in the EXIF (`PixelXDimension` / `PixelYDimension`) are updated.
+- The limit can be changed at the top of the script with `RESIZE_MAX_LONG_SIDE`. The window text updates itself.
 
-**Cas particulier HEIC / HEIF / AVIF :** ces formats sont lus sans problème, mais la copie watermarquée est toujours enregistrée en `.png` (PNG24, sans perte) plutôt que dans le format d'origine (ex. `IMG_1234.heic` → `260925-14h32 IMG_1234 __photo-MartinDube_s.png`). Ré-encoder proprement en HEIC/AVIF demande des encodeurs supplémentaires peu fiables à installer, alors que PNG évite toute compression avec perte. Si tu veux ensuite convertir ces PNG en AVIF, XnConvert.app en lot fait très bien le travail.
+**Special case HEIC / HEIF / AVIF:** these formats are read without any problem, but the watermarked copy is always saved as `.png` (PNG24, lossless) rather than in the original format (e.g. `IMG_1234.heic` → `260925-14h32 IMG_1234 __ma-signature-photo_s.png`). Properly re-encoding to HEIC/AVIF requires extra encoders that are unreliable to install, whereas PNG avoids any lossy compression. If you then want to convert these PNGs to AVIF, XnConvert.app does the job very well in batch.
 
-## Rappel des règles appliquées par le script
+## Rules applied by the script
 
-- Position : bas-gauche, avec une marge de 20 px (ajustable via `MARGIN_PX` en haut du script).
-- Largeur du watermark : toujours 15 % de la largeur de l'image (`WM_WIDTH_RATIO`), avec un minimum de 50 px pour les très petites images (`MIN_WM_WIDTH`).
-- Le résultat est aplati (flatten) sur un fond blanc opaque avant l'enregistrement.
-- Un SVG sans attribut `viewBox` (ou `viewbox`) est refusé.
-- Une photo prise en mode portrait (orientation EXIF) est d'abord remise à l'endroit, pour que le watermark tombe toujours dans le coin bas-gauche visible.
+- Position: bottom-left, with a 20 px margin (adjustable via `MARGIN_PX` at the top of the script).
+- Watermark width: always 15% of the image width (`WM_WIDTH_RATIO`), with a 50 px minimum for very small images (`MIN_WM_WIDTH`).
+- The result is flattened onto an opaque white background before saving.
+- An SVG without a `viewBox` (or `viewbox`) attribute is rejected.
+- A photo taken in portrait mode (EXIF orientation) is first rotated upright, so the watermark always lands in the visible bottom-left corner.
 
-## Qualité et métadonnées conservées
+## Preserved quality and metadata
 
-- **JPEG :** qualité 95 % (`JPEG_QUALITY`) avec couleurs en pleine résolution 4:4:4 (`JPEG_SUBSAMPLING = 0`). Au-delà de 95 %, le fichier grossit beaucoup sans gain visible.
-- **WebP :** enregistré sans perte (lossless).
-- **Profil de couleur ICC** conservé (ex. Display P3 des iPhone), pour que les couleurs ne changent pas.
-- **EXIF conservé au complet :** appareil, objectif, réglages, dates et géolocalisation (GPS).
-- **Auteur ajouté** dans chaque copie (constantes `AUTHOR_NAME` et `AUTHOR_URL` en haut du script) :
-  - EXIF `Artist` : Martin Dubé
-  - XMP `dc:creator` : Martin Dubé (le champ « Créateur » dans Lightroom, Photoshop, Bridge)
-  - XMP IPTC `CreatorContactInfo › CiUrlWork` : https://photo.martindube.net (le champ « Site web » du créateur)
-- Si l'image d'origine contient déjà de l'XMP (ex. Lightroom), il est conservé et ces champs y sont ajoutés, sans écraser un créateur ou un site web déjà présent.
-- **Limites :** le BMP ne peut contenir aucune métadonnée. En TIFF, le champ EXIF `Artist` s'écrit sans accent (« Martin Dube ») ; l'XMP garde « Martin Dubé ».
+- **JPEG:** 95% quality (`JPEG_QUALITY`) with full-resolution 4:4:4 colors (`JPEG_SUBSAMPLING = 0`). Above 95%, the file grows a lot with no visible gain.
+- **WebP:** saved lossless.
+- **ICC color profile** preserved (e.g. the iPhone's Display P3), so colors don't shift.
+- **Full EXIF preserved:** camera, lens, settings, dates and geolocation (GPS).
+- **Author added** to every copy (`AUTHOR_NAME` and `AUTHOR_URL` constants at the top of the script):
+  - EXIF `Artist`: Martin Dubé
+  - XMP `dc:creator`: Martin Dubé (the "Creator" field in Lightroom, Photoshop, Bridge)
+  - XMP IPTC `CreatorContactInfo › CiUrlWork`: https://photo.martindube.net (the creator's "Website" field)
+- If the original image already contains XMP (e.g. from Lightroom), it is kept and these fields are added to it, without overwriting an existing creator or website.
+- **Limits:** BMP can't hold any metadata. In TIFF, the EXIF `Artist` field is written without the accent ("Martin Dube"); the XMP keeps "Martin Dubé".
 
-Pour vérifier les métadonnées d'une copie, dans ton logiciel Terminal (après `brew install exiftool`) : `exiftool -a -G1 "nom-du-fichier.jpg"`.
+To check a copy's metadata, in your Terminal app (after `brew install exiftool`): `exiftool -a -G1 "file-name.jpg"`.
 
-## Dépannage
+## Troubleshooting
 
-- **« rsvg-convert not found »** → l'install Homebrew n'est pas allée au bout, ou le chemin dans le script Automator ne pointe pas vers le bon `python3`/`rsvg-convert` (Apple Silicon : `/opt/homebrew/bin/`, Intel : `/usr/local/bin/`).
-- **Aucune boîte de dialogue n'apparaît** → vérifie que **Pass input** est bien réglé sur **as arguments**, pas « to stdin ».
-- **Les options n'apparaissent pas (ancienne fenêtre sans options)** → la fenêtre avec options n'a pas pu s'ouvrir et le script est revenu à l'ancien sélecteur, avec les options par défaut. Pour voir la raison, lance le script depuis ton logiciel Terminal : `/opt/homebrew/bin/python3 ~/aiScripts/watermarkImg/add_watermark.py ~/Desktop/une-photo.jpg` — le message commençant par `JXA open panel failed:` s'affiche dans le Terminal.
-- **Mode diagnostic (`WM_DEBUG=1`)** → si la fenêtre ou les options se comportent bizarrement (par ex. après une mise à jour de macOS : options absentes, animation de la switch qui saute), lance le script avec ce préfixe dans ton logiciel Terminal (glisse une vraie photo depuis le Finder à la place du chemin d'exemple) :
+- **"rsvg-convert not found"** → the Homebrew install didn't complete, or the path in the Automator script doesn't point to the right `python3`/`rsvg-convert` (Apple Silicon: `/opt/homebrew/bin/`, Intel: `/usr/local/bin/`).
+- **No dialog appears** → check that **Pass input** is set to **as arguments**, not "to stdin".
+- **The options don't show up (old window without options)** → the window with options couldn't open and the script fell back to the old picker, with the default options. To see why, run the script from your Terminal app: `/opt/homebrew/bin/python3 ~/aiScripts/watermarkImg/add_watermark.py ~/Desktop/a-photo.jpg`. The message starting with `JXA open panel failed:` is printed in the Terminal.
+- **Debug mode (`WM_DEBUG=1`)** → if the window or the options behave oddly (e.g. after a macOS update: missing options, switch animation that jumps), run the script with this prefix in your Terminal app (drag a real photo from the Finder in place of the example path):
 
   ```bash
-  WM_DEBUG=1 /opt/homebrew/bin/python3 ~/aiScripts/watermarkImg/add_watermark.py ~/Desktop/une-photo.jpg
+  WM_DEBUG=1 /opt/homebrew/bin/python3 ~/aiScripts/watermarkImg/add_watermark.py ~/Desktop/a-photo.jpg
   ```
 
-  Dans la fenêtre, bascule la switch OFF puis ON, puis clique **Cancel**. Des lignes `[wm-debug]` s'affichent alors dans le Terminal :
-  - `timer tick OK` / `timers worked: true` → les minuteries fonctionnent, donc l'animation de la switch aussi. Si c'est `false`, la switch change d'état sans animation.
-  - `view count` et `classes` → la structure interne de la fenêtre système, utile pour comprendre ce qui a changé côté macOS.
-  - `JXA open panel failed: …` → la fenêtre avec options n'a pas pu s'ouvrir ; le message qui suit donne la cause.
+  In the window, toggle the switch OFF then ON, then click **Cancel**. `[wm-debug]` lines are then printed in the Terminal:
+  - `timer tick OK` / `timers worked: true` → timers work, so the switch animation does too. If it says `false`, the switch changes state without animation.
+  - `view count` and `classes` → the internal structure of the system window, useful to understand what changed on the macOS side.
+  - `JXA open panel failed: …` → the window with options couldn't open; the message that follows gives the cause.
 
-  Ce mode ne change pas le comportement du script (si tu cliques **Submit**, les images sont traitées normalement) : il ajoute seulement ces informations dans le Terminal.
-- **Alerte Finder « The action "Run Shell Script" encountered an error »** → le script ne devrait plus la provoquer (Cancel et erreurs connues se terminent proprement). Si elle réapparaît, c'est une erreur inattendue : lance le script depuis le Terminal (commande ci-dessus) pour voir le détail.
-- **La Quick Action n'apparaît pas dans le menu Services** → dans **Réglages Système > Clavier > Raccourcis clavier > Services**, vérifie qu'elle est cochée/activée.
+  This mode doesn't change the script's behavior (if you click **Submit**, the images are processed normally): it only adds this information in the Terminal.
+- **Finder alert "The action "Run Shell Script" encountered an error"** → the script shouldn't trigger it anymore (Cancel and known errors end cleanly). If it shows up again, it's an unexpected error: run the script from the Terminal (command above) to see the details.
+- **The Quick Action doesn't appear in the Services menu** → in **System Settings > Keyboard > Keyboard Shortcuts > Services**, check that it is checked/enabled.

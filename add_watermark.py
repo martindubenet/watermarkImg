@@ -20,17 +20,20 @@ Workflow:
        width (no upper limit, floor of MIN_WM_WIDTH), render/resize the
        watermark to that width, composite it into the bottom-left corner,
        flatten the result onto an opaque background, and save it next to
-       the original with a " __photo-MartinDube" suffix inserted before the
-       extension (e.g. photo.jpg -> "photo __photo-MartinDube.jpg"), plus "_s"
-       when "Resize for sharing" is on ("photo __photo-MartinDube_s.jpg"). When the
+       the original with a " __<watermark-name>" suffix inserted before the
+       extension. The suffix is the watermark file name (without extension),
+       cleaned up to be file-system friendly (see slugify_suffix): with the
+       watermark "ma signature photo.svg", photo.jpg ->
+       "photo __ma-signature-photo.jpg", plus "_s" when "Resize for sharing"
+       is on ("photo __ma-signature-photo_s.jpg"). When the
        "Add date created" option is on, the capture date is added as
        "YYMMDD-HHhMM" (or "YYMMDD"), separated by a space, before the name
-       (default, e.g. "260925-14h32 photo __photo-MartinDube_s.jpg") or after
-       the suffix (e.g. "photo __photo-MartinDube_s 260925-14h32.jpg").
+       (default, e.g. "260925-14h32 photo __ma-signature-photo_s.jpg") or after
+       the suffix (e.g. "photo __ma-signature-photo_s 260925-14h32.jpg").
        Originals are left untouched.
 
        HEIC/HEIF/AVIF inputs are decoded fine, but are always written back
-       out as lossless PNG24 (photo.heic -> "photo __photo-MartinDube.png"): encoding
+       out as lossless PNG24 (photo.heic -> "photo __ma-signature-photo.png"): encoding
        back to those formats needs extra licensed encoders that aren't
        reliably available, so PNG is used as the practical, always-available,
        compression-free output. See OUTPUT_FORMAT_OVERRIDE below to change this.
@@ -48,6 +51,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -73,8 +77,9 @@ MARGIN_PX = 20          # distance from the bottom-left corner, in px.
                         # Not specified in the original brief -- tweak freely.
 FLATTEN_BG = (255, 255, 255)  # background color used when flattening transparency
 
-WATERMARK_SUFFIX = " __photo-MartinDube"  # appended to the original file stem (leading space)
-RESIZE_SUFFIX = "_s"                      # appended to WATERMARK_SUFFIX when "Resize for sharing" is on
+WATERMARK_SUFFIX_PREFIX = " __"          # between the original file stem and the watermark name
+WATERMARK_SUFFIX_FALLBACK = "watermark"   # used if the watermark file name is empty once cleaned up
+RESIZE_SUFFIX = "_s"                      # appended to the watermark suffix when "Resize for sharing" is on
 DATE_FORMAT_FULL = "%y%m%d-%Hh%M"         # YYMMDD-HHhMM (lowercase "h" = "heure")
 DATE_FORMAT_DAY = "%y%m%d"                # YYMMDD, when hours/minutes are turned off
 DATE_SEPARATOR = " "                      # between the file name part and the date stamp
@@ -554,9 +559,26 @@ def get_date_created(image_path: Path, img: Image.Image) -> datetime:
     return datetime.fromtimestamp(getattr(stat, "st_birthtime", stat.st_mtime))
 
 
-def build_output_name(stem: str, out_ext: str, taken_at: Optional[datetime], options: NamingOptions) -> str:
-    """Build '<stem> __photo-MartinDube[_s][ YYMMDD-HHhMM]<ext>' (date before or after, per options)."""
-    name = f"{stem}{WATERMARK_SUFFIX}"
+def slugify_suffix(text: str) -> str:
+    """Turn the watermark file name into a file-system friendly suffix.
+
+    Every character that is not a letter or a digit (spaces, punctuation,
+    symbols, characters macOS rejects such as ":" or "/") becomes a hyphen,
+    then runs of hyphens collapse into one and edge hyphens are trimmed:
+    "ma signature photo" -> "ma-signature-photo", "logo  (v2)--final" -> "logo-v2-final".
+    Accented letters are kept (macOS handles them fine).
+    """
+    # NFC: macOS may hand over decomposed accents ("e" + combining accent); recompose them first.
+    text = unicodedata.normalize("NFC", text)
+    slug = "".join(ch if ch.isalnum() else "-" for ch in text)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug or WATERMARK_SUFFIX_FALLBACK
+
+
+def build_output_name(stem: str, out_ext: str, taken_at: Optional[datetime],
+                      options: NamingOptions, wm_suffix: str) -> str:
+    """Build '<stem> __<wm_suffix>[_s][ YYMMDD-HHhMM]<ext>' (date before or after, per options)."""
+    name = f"{stem}{WATERMARK_SUFFIX_PREFIX}{wm_suffix}"
     if options.resize:
         name += RESIZE_SUFFIX
     if options.add_date and taken_at is not None:
@@ -768,7 +790,7 @@ def resize_for_sharing(img: Image.Image) -> Image.Image:
 
 
 def apply_watermark(image_path: Path, wm_path: Path, cache: dict, options: NamingOptions) -> Path:
-    """Composite the watermark onto one image, flatten, and save as <name> __photo-MartinDube[_s][ date]<ext>."""
+    """Composite the watermark onto one image, flatten, and save as <name> __<watermark-name>[_s][ date]<ext>."""
     source = open_image(image_path)
     # Read the capture date before convert(), which drops the EXIF metadata.
     taken_at = get_date_created(image_path, source) if options.add_date else None
@@ -793,7 +815,7 @@ def apply_watermark(image_path: Path, wm_path: Path, cache: dict, options: Namin
 
     src_ext = image_path.suffix.lower()
     out_ext = OUTPUT_FORMAT_OVERRIDE.get(src_ext, image_path.suffix)
-    out_path = unique_path(image_path.with_name(build_output_name(image_path.stem, out_ext, taken_at, options)))
+    out_path = unique_path(image_path.with_name(build_output_name(image_path.stem, out_ext, taken_at, options, slugify_suffix(wm_path.stem))))
     save_with_metadata(flattened, out_path, source)
     return out_path
 
