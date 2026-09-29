@@ -27,6 +27,8 @@ Write down the exact path returned by `which python3`: you will need it in step 
 
 ## 2. Create a symbolic link to the script (already on the external drive)
 
+> <mark>⚠</mark> IMPORTANT NOTE: In the following instructions the term « <mark>usbgT7</mark> » refers to my personnal external USB hard drive. If your script is on your macOS's main hard drive, disregard this step (#2).
+
 The script lives permanently on the external drive, in `/Volumes/usbgT7/aiScripts/watermarkImg/`, so there is no need to move or copy it. But Automator refers to the script by an absolute path under `$HOME` (see step 3.6) and doesn't load the aliases from your `.zshrc` (such as `cdscript`), so it can't find the external drive on its own.
 
 The fix, to do once in your Terminal app:

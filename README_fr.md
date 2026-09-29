@@ -27,6 +27,8 @@ Garde en note le chemin exact retourné par `which python3` — tu en auras beso
 
 ## 2. Créer un lien symbolique vers le script (déjà sur le disque externe)
 
+> <mark>⚠</mark> NOTE IMPORTANTE : Dans les instructions suivantes, le terme « <mark>usbgT7</mark> » fait référence au nom de mon disque dur externe personnel. Si votre script est sur le disque dure principale de votre macOS ne tenez pas compte de cette étape (no 2).
+
 Chez toi, le script vit en permanence sur le disque externe, dans `/Volumes/usbgT7/aiScripts/watermarkImg/` — inutile de le déplacer ou d'en faire une copie. Mais Automator référence le script par un chemin absolu sous `$HOME` (voir étape 3.6) et ne charge pas les alias de ton `.zshrc` (comme `cdscript`), donc il ne peut pas retrouver le disque externe tout seul.
 
 La solution, à faire une seule fois dans ton logiciel Terminal :
