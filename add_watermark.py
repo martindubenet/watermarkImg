@@ -10,33 +10,28 @@ passes the Finder-selected image files as command-line arguments.
 
 Workflow:
     1. Receive image file paths as CLI arguments (from the Finder selection).
-    2. Prompt the user with a native macOS open panel to pick a watermark file
-       (SVG preferred, PNG24 accepted as a fallback). The panel embeds an
-       options box (accessory view): an "Add date created" switch that, when ON,
-       reveals the date position and time sub-options. Cancel exits silently.
+    2. Show a single native macOS open panel to pick the watermark file
+       (SVG preferred, PNG24 accepted), with one fixed "Resize for sharing"
+       checkbox below the file list. Cancel exits silently.
+       The panel is used exactly as Apple intends (static accessory view, no
+       timers, no delegate, no live relayout), so no click gets lost.
     3. If the watermark is an SVG, validate it contains a `viewBox` (or
        `viewbox`) attribute -- abort otherwise.
-    4. For each image: compute the watermark width as 15% of the image
-       width (no upper limit, floor of MIN_WM_WIDTH), render/resize the
-       watermark to that width, composite it into the bottom-left corner,
-       flatten the result onto an opaque background, and save it next to
-       the original with a " __<watermark-name>" suffix inserted before the
-       extension. The suffix is the watermark file name (without extension),
+    4. For each image: optionally downscale it (longer side capped at
+       RESIZE_MAX_LONG_SIDE), compute the watermark width as 15% of the image
+       width (floor of MIN_WM_WIDTH), composite it into the bottom-left corner,
+       flatten the result onto an opaque background, and save it next to the
+       original as "<name>__<watermark-name>[_s]<ext>". The watermark name is
        cleaned up to be file-system friendly (see slugify_suffix): with the
        watermark "ma signature photo.svg", photo.jpg ->
-       "photo __ma-signature-photo.jpg", plus "_s" when "Resize for sharing"
-       is on ("photo __ma-signature-photo_s.jpg"). When the
-       "Add date created" option is on, the capture date is added as
-       "YYMMDD-HHhMM" (or "YYMMDD"), separated by a space, before the name
-       (default, e.g. "260925-14h32 photo __ma-signature-photo_s.jpg") or after
-       the suffix (e.g. "photo __ma-signature-photo_s 260925-14h32.jpg").
-       Originals are left untouched.
+       "photo__ma-signature-photo_s.jpg" ("_s" only when "Resize for sharing"
+       is checked). Originals are left untouched.
 
        HEIC/HEIF/AVIF inputs are decoded fine, but are always written back
-       out as lossless PNG24 (photo.heic -> "photo __ma-signature-photo.png"): encoding
-       back to those formats needs extra licensed encoders that aren't
-       reliably available, so PNG is used as the practical, always-available,
-       compression-free output. See OUTPUT_FORMAT_OVERRIDE below to change this.
+       out as high-quality JPEG (photo.heic -> "photo__ma-signature-photo.jpg").
+       See OUTPUT_FORMAT_OVERRIDE below to change this.
+
+Adding the capture date to file names is a separate script: ../addDateImg/add_date.py
 
 Requires on the Mac running this:
     - Python 3.9+ with Pillow 11+    (pip3 install -U Pillow) -- 11+ is needed to write XMP into JPEG
@@ -44,8 +39,6 @@ Requires on the Mac running this:
     - rsvg-convert, only for SVG watermarks (brew install librsvg)
 """
 
-import json
-import os
 import re
 import shutil
 import subprocess
@@ -53,7 +46,6 @@ import sys
 import tempfile
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -77,18 +69,23 @@ MARGIN_PX = 20          # distance from the bottom-left corner, in px.
                         # Not specified in the original brief -- tweak freely.
 FLATTEN_BG = (255, 255, 255)  # background color used when flattening transparency
 
-WATERMARK_SUFFIX_PREFIX = " __"          # between the original file stem and the watermark name
+WATERMARK_SUFFIX_PREFIX = "__"           # between the original file stem and the watermark name
 WATERMARK_SUFFIX_FALLBACK = "watermark"   # used if the watermark file name is empty once cleaned up
 RESIZE_SUFFIX = "_s"                      # appended to the watermark suffix when "Resize for sharing" is on
-DATE_FORMAT_FULL = "%y%m%d-%Hh%M"         # YYMMDD-HHhMM (lowercase "h" = "heure")
-DATE_FORMAT_DAY = "%y%m%d"                # YYMMDD, when hours/minutes are turned off
-DATE_SEPARATOR = " "                      # between the file name part and the date stamp
 
-# EXIF tags used to find when the photo was taken (first one found wins)
+# --- Watermark list ---------------------------------------------------------
+# Every SVG/PNG in this folder is offered in the list. An ordering prefix such as
+# "1 ", "02-" or "3_" sets the list order and is left out of the label and suffix.
+SCRIPT_DIR = Path(__file__).resolve().parent
+WATERMARK_DIR = SCRIPT_DIR / "watermarks"
+LAST_CHOICE_FILE = SCRIPT_DIR / ".last_choice"   # preselected item next time (git-ignored)
+ORDER_PREFIX_RE = re.compile(r"^\d+[\s._-]+")
+LABEL_RESIZE = "   \u2014  resize for sharing"
+LABEL_FULL = "   \u2014  full size"
+LABEL_OTHER = "Other file\u2026"
+
+# EXIF tags
 EXIF_IFD_POINTER = 0x8769
-EXIF_DATETIME_ORIGINAL = 36867   # DateTimeOriginal: when the shutter fired
-EXIF_DATETIME_DIGITIZED = 36868  # DateTimeDigitized
-EXIF_DATETIME = 306              # DateTime (IFD0): last change by camera/software
 EXIF_ARTIST = 0x013B             # Artist (IFD0)
 EXIF_ORIENTATION = 0x0112        # Orientation (IFD0)
 EXIF_PIXEL_X = 0xA002            # PixelXDimension (Exif IFD)
@@ -110,17 +107,9 @@ SUPPORTED_EXT = {
     ".tif", ".tiff", ".bmp",
 }
 
-# Formats we can happily read but won't try to re-encode: written out as lossless PNG24 instead.
-OUTPUT_FORMAT_OVERRIDE = {".heic": ".png", ".heif": ".png", ".avif": ".png"}
-
-
-def notify(message: str, title: str = "Watermark batch") -> None:
-    """Show a native macOS alert dialog (visible even though this runs headless from Automator)."""
-    script = (
-        f"display dialog {_as_literal(message)} "
-        f"with title {_as_literal(title)} buttons {{\"OK\"}} default button \"OK\""
-    )
-    subprocess.run(["osascript", "-e", script], check=False)
+# Formats we can read but don't re-encode: written out as high-quality JPEG instead
+# (JPEG_QUALITY, 4:4:4, ICC + EXIF kept) -- far smaller than lossless PNG, visually identical.
+OUTPUT_FORMAT_OVERRIDE = {".heic": ".jpg", ".heif": ".jpg", ".avif": ".jpg"}
 
 
 def _as_literal(text: str) -> str:
@@ -129,434 +118,113 @@ def _as_literal(text: str) -> str:
 
 
 @dataclass
-class NamingOptions:
-    """User choices from the "Options" box of the watermark picker."""
-    add_date: bool = True
-    position: str = "before"  # "before" or "after" the file name
-    include_time: bool = True
-    resize: bool = True       # "Resize for sharing": cap the longer side at RESIZE_MAX_LONG_SIDE
+class Options:
+    """User choices from the watermark list."""
+    resize: bool = True  # "Resize for sharing": cap the longer side at RESIZE_MAX_LONG_SIDE
 
 
-# JXA (JavaScript for Automation) script: shows a native NSOpenPanel with an
-# "Options" box as accessory view, and prints the result as JSON on stdout.
-_OPEN_PANEL_JXA = r"""
-ObjC.import('AppKit');
+def run_dialog(body: str) -> tuple[Optional[str], bool]:
+    """Run an AppleScript dialog owned by the frontmost app (Finder, for a Quick Action).
 
-var WINDOW_TITLE = 'Add Watermark';
-var MESSAGE = 'Add Watermark : Select the image (SVG or PNG)';  // system-styled panel header
+    A dialog shown by a background osascript process may not get the keyboard/mouse
+    focus when launched from the Finder (lost clicks since macOS 27.2). Asking the
+    frontmost app to show it avoids that. If macOS refuses the Apple Event (Automation
+    permission denied), the dialog is shown by osascript itself as a fallback.
 
-// Options box geometry (non-flipped view: rows are placed from the top edge down)
-var BOX_WIDTH = 600;
-var TOP_GAP = 18;           // space between the file list and the switch row
-var ROW_HEIGHT = 28;        // vertical rhythm between rows
-var BOTTOM_PAD = 12;
-var LEFT_EXPANDED = 24 + 2 * ROW_HEIGHT;  // left zone content: switch row + 2 sub-options
-var LEFT_COLLAPSED = 24;                   // left zone content: switch row only
-var ZONE_GAP = 10;          // space on each side of the vertical ruler
-var RIGHT_MARGIN = 20;      // right edge padding of the options box
-var RESIZE_TEXT = 'Reduce image dimensions to a maximum of __RESIZE_MAX__ pixels on its longer side ' +
-                  '(Y for portrait OR X for landscape axis).';
-var ANIM_DURATION = 0.22;   // seconds, collapse/expand transition
-
-function run(argv) {
-    var DEBUG = (argv && argv.length > 0 && argv[0] === 'debug');
-    function log(msg) { if (DEBUG) { console.log('[wm-debug] ' + msg); } }
-
-    var app = $.NSApplication.sharedApplication;
-    app.setActivationPolicy(1); // Accessory: lets the panel take focus without a Dock icon
-    app.activateIgnoringOtherApps(true);
-
-    var alignX = 20;        // left edge; re-synced with the panel title when reachable
-    var expanded = true;
-    var timersWork = false; // set on the first timer tick; animation needs working timers
-
-    // --- Options container: plain view, no title, no background ----------
-    var box = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, BOX_WIDTH, 120));
-    box.autoresizingMask = 2;  // NSViewWidthSizable: stretch with the panel
-    box.clipsToBounds = true;  // sub-options get clipped while the box collapses
-
-    // Main toggle: small <Switch> + label matching the system panel header (bold, system size)
-    var swDate = $.NSSwitch.alloc.initWithFrame($.NSMakeRect(0, 0, 40, 22));
-    swDate.controlSize = 1;    // NSControlSizeSmall: closer to checkbox/radio size
-    swDate.setFrameSize(swDate.fittingSize);
-    swDate.state = 1;
-    box.addSubview(swDate);
-    var swLabel = $.NSTextField.labelWithString('Add date created');
-    swLabel.font = $.NSFont.boldSystemFontOfSize($.NSFont.systemFontSize);
-    swLabel.sizeToFit;
-    box.addSubview(swLabel);
-
-    function makeButton(title, type, checked) {
-        var btn = $.NSButton.alloc.initWithFrame($.NSMakeRect(0, 0, 300, 20));
-        btn.setButtonType(type); // 3 = checkbox (switch button), 4 = radio
-        btn.title = title;
-        btn.state = checked ? 1 : 0;
-        btn.sizeToFit;
-        box.addSubview(btn);
-        return btn;
-    }
-
-    // <li> 1. Position relative to file name: (o) Before  ( ) After
-    var posLabel = $.NSTextField.labelWithString('1. Position relative to file name:');
-    box.addSubview(posLabel);
-    var rBefore = makeButton('Before', 4, true);
-    var rAfter = makeButton('After', 4, false);
-    rBefore.tag = 1;
-    rAfter.tag = 2;
-
-    // <li> 2. [x] Include hours and minutes (HHhMM)
-    var timeNum = $.NSTextField.labelWithString('2.');
-    box.addSubview(timeNum);
-    var cbTime = makeButton('Include hours and minutes (HHhMM)', 3, true);
-
-    var subOptions = [posLabel, rBefore, rAfter, timeNum, cbTime];
-
-    // --- Vertical ruler between the two zones -------------------------------
-    var ruler = $.NSBox.alloc.initWithFrame($.NSMakeRect(0, 0, 1, 60));
-    ruler.boxType = 2;  // NSBoxSeparator: native thin separator line
-    box.addSubview(ruler);
-
-    // --- Right zone: [x] Resize for sharing + explanation -------------------
-    var cbResize = makeButton('Resize for sharing', 3, true);
-    cbResize.font = $.NSFont.boldSystemFontOfSize($.NSFont.systemFontSize); // same style as the switch label
-    cbResize.sizeToFit;
-    var resizeText = $.NSTextField.wrappingLabelWithString(RESIZE_TEXT);
-    resizeText.font = $.NSFont.systemFontOfSize($.NSFont.systemFontSize);  // same style as the left option labels
-    box.addSubview(resizeText);
-
-    // Horizontal offset of the checkbox title, so the explanation aligns with it.
-    function checkboxTitleInset() {
-        try {
-            var x = cbResize.cell.titleRectForBounds(cbResize.bounds).origin.x;
-            if (x >= 12 && x <= 30) { return Math.round(x); }
-        } catch (e) { /* fall through to the default */ }
-        return 20;
-    }
-
-    // Size the explanation to the available width; return the right zone content height.
-    var rightX = 0;
-    function measureRightZone() {
-        var leftEdge = Math.max(
-            swLabel.frame.origin.x + swLabel.frame.size.width,
-            rAfter.frame.origin.x + rAfter.frame.size.width,
-            cbTime.frame.origin.x + cbTime.frame.size.width
-        );
-        var rulerX = Math.round(leftEdge + ZONE_GAP);
-        ruler.setFrameOrigin($.NSMakePoint(rulerX, ruler.frame.origin.y));
-        rightX = rulerX + 1 + ZONE_GAP;
-        var textW = Math.max(180, box.frame.size.width - rightX - checkboxTitleInset() - RIGHT_MARGIN);
-        resizeText.preferredMaxLayoutWidth = textW;
-        var fit = resizeText.fittingSize;
-        resizeText.setFrameSize($.NSMakeSize(textW, Math.ceil(fit.height)));
-        return 24 + 2 + resizeText.frame.size.height;  // checkbox row + gap + text
-    }
-
-    // Box height for a given switch state: the taller of the two zones.
-    // Switch OFF: both zones collapse to their first row (the explanation is hidden too).
-    function heightFor(isExpanded) {
-        var rightFull = measureRightZone();  // also positions the ruler and right zone
-        var right = isExpanded ? rightFull : 24;
-        var left = isExpanded ? LEFT_EXPANDED : LEFT_COLLAPSED;
-        return TOP_GAP + Math.max(left, right) + BOTTOM_PAD;
-    }
-
-    // Vertically center a control on a row's center line.
-    function place(view, x, centerY) {
-        view.setFrameOrigin($.NSMakePoint(x, Math.round(centerY - view.frame.size.height / 2)));
-    }
-
-    // Lay out every control for a given box height; rows hang from the top edge,
-    // so shrinking the height clips the sub-options from the bottom up.
-    function layout(height, showSubs) {
-        box.setFrameSize($.NSMakeSize(box.frame.size.width, height));
-        var row0 = height - TOP_GAP - 12;
-        var row1 = row0 - ROW_HEIGHT;
-        var row2 = row1 - ROW_HEIGHT;
-
-        place(swDate, alignX, row0);
-        var labelX = alignX + swDate.frame.size.width + 8;
-        place(swLabel, labelX, row0);
-
-        var subX = labelX;  // <ol> indent aligned with the switch label text
-        place(posLabel, subX, row1);
-        var bx = subX + posLabel.frame.size.width + 12;
-        place(rBefore, bx, row1);
-        place(rAfter, bx + rBefore.frame.size.width + 16, row1);
-        place(timeNum, subX, row2);
-        place(cbTime, subX + timeNum.frame.size.width + 6, row2);
-
-        for (var i = 0; i < subOptions.length; i++) {
-            subOptions[i].hidden = !showSubs;
-        }
-
-        // Right zone, top-aligned with the switch row; ruler spans the content height.
-        measureRightZone();
-        place(cbResize, rightX, row0);
-        var textTop = row0 - 12 - 2;
-        resizeText.setFrameOrigin($.NSMakePoint(rightX + checkboxTitleInset(), Math.round(textTop - resizeText.frame.size.height)));
-        resizeText.hidden = !showSubs;  // explanation collapses with the switch, like the sub-options
-        ruler.setFrame($.NSMakeRect(ruler.frame.origin.x, BOTTOM_PAD, 1, Math.max(1, height - TOP_GAP - BOTTOM_PAD)));
-    }
-    layout(120, true);                // place controls once so measurements are real
-    layout(heightFor(true), true);
-    var lastWidth = box.frame.size.width;
-
-    var panel = $.NSOpenPanel.openPanel;
-
-    // Ask the panel to re-measure the accessory view after a height change.
-    function refreshAccessory() {
-        panel.accessoryView = $();
-        panel.accessoryView = box;
-        panel.accessoryViewDisclosed = true;
-    }
-
-    // --- Collapse / expand animation (ease-in-out, stepped by a timer) -----
-    var anim = null;  // { from, to, start, timer }
-    function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
-
-    function animateTo(targetHeight) {
-        if (anim !== null) { anim.timer.invalidate; anim = null; }
-        if (!timersWork) {  // no working run-loop timers: jump to the final state
-            layout(targetHeight, expanded);
-            refreshAccessory();
-            return;
-        }
-        var t = $.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(1 / 60, handler, 'animStep:', $(), true);
-        anim = { from: box.frame.size.height, to: targetHeight, start: Date.now(), timer: t };
-        $.NSRunLoop.currentRunLoop.addTimerForMode(t, 'kCFRunLoopCommonModes');
-        $.NSRunLoop.currentRunLoop.addTimerForMode(t, 'NSModalPanelRunLoopMode');
-    }
-
-    function animStep() {
-        if (anim === null) { return; }
-        var t = Math.min(1, (Date.now() - anim.start) / (ANIM_DURATION * 1000));
-        var h = Math.round(anim.from + (anim.to - anim.from) * easeInOut(t));
-        // Keep sub-options visible while moving; hide them only once fully collapsed.
-        layout(h, t < 1 ? true : expanded);
-        refreshAccessory();
-        if (t >= 1) { anim.timer.invalidate; anim = null; }
-    }
-
-    // Recursively collect the panel's subviews (used for the cosmetic tweaks below).
-    function allSubviews(view, out) {
-        var subs = view.subviews;
-        for (var i = 0; i < subs.count; i++) {
-            var v = subs.objectAtIndex(i);
-            out.push(v);
-            allSubviews(v, out);
-        }
-        return out;
-    }
-
-    var dumped = false;
-
-    // Best-effort tweaks on the panel's own views (no-op when they are not reachable,
-    // e.g. when macOS hosts the file browser in a separate process):
-    //  - hide the "Hide Options" / "Show Options" button
-    //  - left-align the options with the title
-    function tweakPanelUI() {
-        var frameView = panel.contentView.superview;
-        if (!frameView || frameView.isNil()) { log('no frame view'); return; }
-        var views = allSubviews(frameView, []);
-
-        if (DEBUG && !dumped) {
-            dumped = true;
-            var names = {};
-            for (var d = 0; d < views.length; d++) {
-                var cls = ObjC.unwrap(views[d].className);
-                names[cls] = (names[cls] || 0) + 1;
-                if (views[d].isKindOfClass($.NSTextField)) { log('text field: ' + JSON.stringify(views[d].stringValue.js)); }
-                if (views[d].isKindOfClass($.NSButton)) { log('button: ' + JSON.stringify(views[d].title.js)); }
-            }
-            log('view count: ' + views.length);
-            log('classes: ' + JSON.stringify(names));
-        }
-
-        var titleField = null;
-        for (var i = 0; i < views.length; i++) {
-            var v = views[i];
-            if (v.isKindOfClass($.NSTextField) && !v.isDescendantOf(box)
-                && v.stringValue.js === MESSAGE) {
-                titleField = v;  // used below to left-align the options with the header
-            } else if (v.isKindOfClass($.NSButton) && !v.isDescendantOf(box)
-                       && /option/i.test(v.title.js) && !v.hidden) {
-                v.hidden = true; // e.g. "Hide Options" (localized titles contain "option" too)
-                log('options button hidden');
-            }
-        }
-
-        // Left-align the switch with the title text.
-        if (titleField !== null && anim === null) {
-            var origin = box.convertPointFromView(titleField.frame.origin, titleField.superview);
-            var x = Math.round(origin.x + 2); // + label text inset
-            if (x >= 0 && x < 300 && Math.abs(x - alignX) > 0.5) {
-                alignX = x;
-                layout(box.frame.size.height, expanded);
-            }
-        }
-
-        // Panel width changed (stretch or window resize): re-wrap the explanation
-        // and let the panel re-measure if the needed height changed.
-        if (anim === null && Math.abs(box.frame.size.width - lastWidth) > 0.5) {
-            lastWidth = box.frame.size.width;
-            var target = heightFor(expanded);
-            var oldH = box.frame.size.height;
-            layout(target, expanded);
-            if (Math.abs(target - oldH) > 0.5) { refreshAccessory(); }
-        }
-    }
-
-    // --- Event handler ---------------------------------------------------------
-    ObjC.registerSubclass({
-        name: 'WMOptionsHandler',
-        methods: {
-            'positionChanged:': {
-                types: ['void', ['id']],
-                implementation: function (sender) {
-                    rBefore.state = (sender.tag == 1) ? 1 : 0;
-                    rAfter.state = (sender.tag == 2) ? 1 : 0;
-                }
-            },
-            'dateToggled:': {
-                types: ['void', ['id']],
-                implementation: function (sender) {
-                    expanded = (swDate.state == 1);
-                    animateTo(heightFor(expanded));
-                }
-            },
-            'animStep:': {
-                types: ['void', ['id']],
-                implementation: function (timer) { animStep(); }
-            },
-            'tweakUI:': {
-                types: ['void', ['id']],
-                implementation: function (timer) {
-                    if (!timersWork) { timersWork = true; log('timer tick OK'); }
-                    tweakPanelUI();
-                }
-            }
-        }
-    });
-    var handler = $.WMOptionsHandler.alloc.init;
-    rBefore.target = handler;
-    rBefore.action = 'positionChanged:';
-    rAfter.target = handler;
-    rAfter.action = 'positionChanged:';
-    swDate.target = handler;
-    swDate.action = 'dateToggled:';
-
-    // --- Open panel -----------------------------------------------------------
-    panel.title = WINDOW_TITLE;
-    panel.message = MESSAGE;
-    panel.prompt = 'Submit';  // default-button label
-    panel.canChooseFiles = true;
-    panel.canChooseDirectories = false;
-    panel.allowsMultipleSelection = false;
-    panel.allowedFileTypes = $(['svg', 'png']);
-    panel.accessoryView = box;
-    panel.accessoryViewDisclosed = true; // show the options without an extra toggle
-
-    // The panel builds its views lazily, so apply the tweaks on a short repeating
-    // timer that also runs while the modal panel is up.
-    var timer = $.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(0.15, handler, 'tweakUI:', $(), true);
-    $.NSRunLoop.currentRunLoop.addTimerForMode(timer, 'kCFRunLoopCommonModes');
-    $.NSRunLoop.currentRunLoop.addTimerForMode(timer, 'NSModalPanelRunLoopMode');
-
-    var response = panel.runModal;
-    timer.invalidate;
-    if (anim !== null) { anim.timer.invalidate; }
-    log('timers worked: ' + timersWork);
-
-    if (response != 1) { // 1 = NSModalResponseOK
-        return JSON.stringify({ cancelled: true });
-    }
-    return JSON.stringify({
-        cancelled: false,
-        path: panel.URL.path.js,
-        addDate: swDate.state == 1,
-        position: (rBefore.state == 1) ? 'before' : 'after',
-        includeTime: cbTime.state == 1,
-        resize: cbResize.state == 1
-    });
-}
-"""
-
-
-def choose_watermark_and_options() -> tuple[Optional[Path], NamingOptions]:
-    """Show the watermark picker with its "Options" box.
-
-    Returns (path, options); path is None when the user clicked Cancel.
-    Falls back to the plain AppleScript chooser (default options) if the
-    JXA open panel can't run for some reason.
+    Returns (stdout, cancelled).
     """
-    # WM_DEBUG=1 prints the open panel's diagnostics (view hierarchy, timers) to the Terminal.
-    debug = os.environ.get("WM_DEBUG") == "1"
-    script = _OPEN_PANEL_JXA.replace("__RESIZE_MAX__", str(RESIZE_MAX_LONG_SIDE))
-    cmd = ["osascript", "-l", "JavaScript", "-e", script]
-    if debug:
-        cmd.append("debug")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if debug and result.stderr:
-        print(result.stderr, file=sys.stderr)
-    if result.returncode == 0:
-        try:
-            data = json.loads(result.stdout.strip())
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict):
-            if data.get("cancelled"):
-                return None, NamingOptions()
-            options = NamingOptions(
-                add_date=bool(data.get("addDate", True)),
-                position="after" if data.get("position") == "after" else "before",
-                include_time=bool(data.get("includeTime", True)),
-                resize=bool(data.get("resize", True)),
-            )
-            return Path(data["path"]), options
-
-    # Fallback: the open panel failed (not a Cancel) -- log why and use the legacy chooser.
-    print(f"JXA open panel failed: {result.stderr.strip()}", file=sys.stderr)
-    return choose_watermark_file_legacy(), NamingOptions()
+    wrapped = ("tell application (path to frontmost application as text)\n"
+               "activate\n" + body + "\nend tell")
+    for script in (wrapped, body):
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout.strip(), False
+        if "-128" in result.stderr:  # user clicked Cancel
+            return None, True
+        print(f"Dialog failed: {result.stderr.strip()}", file=sys.stderr)
+    return None, True
 
 
-def choose_watermark_file_legacy() -> Optional[Path]:
-    """Plain AppleScript 'choose file' dialog (no options); return the picked path, or None if cancelled."""
-    script = (
-        "POSIX path of (choose file "
-        "with prompt \"Add Watermark : Select the image (SVG or PNG)\" "
-        "of type {\"public.svg-image\", \"public.png\"})"
-    )
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    return Path(result.stdout.strip())
+def notify(message: str, title: str = "Watermark batch") -> None:
+    """Show a native macOS alert dialog (visible even though this runs headless from Automator)."""
+    run_dialog(f"display dialog {_as_literal(message)} with title {_as_literal(title)} "
+               "buttons {\"OK\"} default button \"OK\"")
 
 
-def get_date_created(image_path: Path, img: Image.Image) -> datetime:
-    """Return when the photo was taken: EXIF DateTimeOriginal first, then the file's creation date."""
+def display_name(wm_path: Path) -> str:
+    """File name without an ordering prefix: "1 signature.svg" -> "signature.svg"."""
+    return ORDER_PREFIX_RE.sub("", wm_path.name) or wm_path.name
+
+
+def list_watermarks() -> list[Path]:
+    """SVG/PNG files of WATERMARK_DIR, sorted by name (hidden files ignored)."""
+    if not WATERMARK_DIR.is_dir():
+        return []
+    files = [p for p in WATERMARK_DIR.iterdir()
+             if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in (".svg", ".png")]
+    return sorted(files, key=lambda p: p.name.casefold())
+
+
+def read_last_choice() -> Optional[str]:
     try:
-        exif = img.getexif()
-        sub_ifd = exif.get_ifd(EXIF_IFD_POINTER)
-        candidates = (
-            sub_ifd.get(EXIF_DATETIME_ORIGINAL),
-            sub_ifd.get(EXIF_DATETIME_DIGITIZED),
-            exif.get(EXIF_DATETIME),
-        )
-        for raw in candidates:
-            if not raw:
-                continue
-            if isinstance(raw, bytes):
-                raw = raw.decode("ascii", errors="ignore")
-            try:
-                return datetime.strptime(raw.strip("\x00 ")[:19], "%Y:%m:%d %H:%M:%S")
-            except ValueError:
-                continue  # e.g. "0000:00:00 00:00:00" -- try the next tag
-    except Exception:  # noqa: BLE001 -- missing/corrupt EXIF: fall back to the file date
-        pass
+        return LAST_CHOICE_FILE.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
-    # No usable EXIF (screenshots, exports...): use the file's creation date (macOS birthtime).
-    stat = image_path.stat()
-    return datetime.fromtimestamp(getattr(stat, "st_birthtime", stat.st_mtime))
+
+def save_last_choice(label: str) -> None:
+    try:
+        LAST_CHOICE_FILE.write_text(label, encoding="utf-8")
+    except OSError:
+        pass  # not critical: the first item is preselected next time
+
+
+def choose_watermark_and_options(count: int) -> tuple[bool, Optional[Path], Options]:
+    """One native list: each watermark twice (resized / full size), plus "Other file...".
+
+    Returns (cancelled, path, options).
+    """
+    choices: dict[str, tuple[Path, bool]] = {}
+    for wm in list_watermarks():
+        name = display_name(wm)
+        choices[f"{name}{LABEL_RESIZE}"] = (wm, True)
+        choices[f"{name}{LABEL_FULL}"] = (wm, False)
+    if not choices:  # empty folder: go straight to the file chooser
+        return choose_other_file()
+
+    labels = list(choices) + [LABEL_OTHER]
+    last = read_last_choice()
+    default = last if last in choices else labels[0]
+    items = "{" + ", ".join(_as_literal(label) for label in labels) + "}"
+    picked, cancelled = run_dialog(
+        f"set picked to choose from list {items} with title \"Add Watermark\" "
+        f"with prompt {_as_literal(f'Watermark for {count} image(s):')} "
+        f"default items {{{_as_literal(default)}}} OK button name \"Submit\"\n"
+        "if picked is false then return \"\"\n"
+        "return item 1 of picked")
+    if cancelled or not picked:
+        return True, None, Options()
+    if picked == LABEL_OTHER:
+        return choose_other_file()
+    save_last_choice(picked)
+    wm_path, resize = choices[picked]
+    return False, wm_path, Options(resize=resize)
+
+
+def choose_other_file() -> tuple[bool, Optional[Path], Options]:
+    """Plain file chooser, then a Yes/No dialog for "Resize for sharing"."""
+    path, cancelled = run_dialog(
+        "POSIX path of (choose file with prompt \"Add Watermark : Select the image (SVG or PNG)\" "
+        "of type {\"public.svg-image\", \"public.png\"})")
+    if cancelled or not path:
+        return True, None, Options()
+    answer, cancelled = run_dialog(
+        f"button returned of (display dialog \"Resize for sharing (longer side max "
+        f"{RESIZE_MAX_LONG_SIDE} px)?\" with title \"Add Watermark\" "
+        "buttons {\"Cancel\", \"No\", \"Yes\"} default button \"Yes\" cancel button \"Cancel\")")
+    if cancelled:
+        return True, None, Options()
+    return False, Path(path), Options(resize=(answer == "Yes"))
 
 
 def slugify_suffix(text: str) -> str:
@@ -575,18 +243,11 @@ def slugify_suffix(text: str) -> str:
     return slug or WATERMARK_SUFFIX_FALLBACK
 
 
-def build_output_name(stem: str, out_ext: str, taken_at: Optional[datetime],
-                      options: NamingOptions, wm_suffix: str) -> str:
-    """Build '<stem> __<wm_suffix>[_s][ YYMMDD-HHhMM]<ext>' (date before or after, per options)."""
+def build_output_name(stem: str, out_ext: str, options: Options, wm_suffix: str) -> str:
+    """Build '<stem>__<wm_suffix>[_s]<ext>'."""
     name = f"{stem}{WATERMARK_SUFFIX_PREFIX}{wm_suffix}"
     if options.resize:
         name += RESIZE_SUFFIX
-    if options.add_date and taken_at is not None:
-        stamp = taken_at.strftime(DATE_FORMAT_FULL if options.include_time else DATE_FORMAT_DAY)
-        if options.position == "before":
-            name = f"{stamp}{DATE_SEPARATOR}{name}"
-        else:
-            name = f"{name}{DATE_SEPARATOR}{stamp}"
     return f"{name}{out_ext}"
 
 
@@ -789,11 +450,9 @@ def resize_for_sharing(img: Image.Image) -> Image.Image:
     return img.resize(new_size, Image.LANCZOS)
 
 
-def apply_watermark(image_path: Path, wm_path: Path, cache: dict, options: NamingOptions) -> Path:
-    """Composite the watermark onto one image, flatten, and save as <name> __<watermark-name>[_s][ date]<ext>."""
+def apply_watermark(image_path: Path, wm_path: Path, cache: dict, options: Options) -> Path:
+    """Composite the watermark onto one image, flatten, and save as <name>__<watermark-name>[_s]<ext>."""
     source = open_image(image_path)
-    # Read the capture date before convert(), which drops the EXIF metadata.
-    taken_at = get_date_created(image_path, source) if options.add_date else None
     # Rotate the pixels upright per the EXIF Orientation tag, so the watermark lands
     # in the visual bottom-left corner (the saved EXIF Orientation is reset to 1).
     base = ImageOps.exif_transpose(source).convert("RGBA")
@@ -815,7 +474,8 @@ def apply_watermark(image_path: Path, wm_path: Path, cache: dict, options: Namin
 
     src_ext = image_path.suffix.lower()
     out_ext = OUTPUT_FORMAT_OVERRIDE.get(src_ext, image_path.suffix)
-    out_path = unique_path(image_path.with_name(build_output_name(image_path.stem, out_ext, taken_at, options, slugify_suffix(wm_path.stem))))
+    out_name = build_output_name(image_path.stem, out_ext, options, slugify_suffix(Path(display_name(wm_path)).stem))
+    out_path = unique_path(image_path.with_name(out_name))
     save_with_metadata(flattened, out_path, source)
     return out_path
 
@@ -826,9 +486,12 @@ def main() -> int:
         notify("No valid image was received (supported formats: jpg, jpeg, png, webp, heic, heif, avif, tif, tiff, bmp).")
         return 0  # handled: our dialog is enough, avoid Automator's extra error alert
 
-    wm_path, options = choose_watermark_and_options()
-    if wm_path is None:
+    cancelled, wm_path, options = choose_watermark_and_options(len(image_paths))
+    if cancelled or wm_path is None:
         return 0  # user clicked Cancel: exit quietly (non-zero would trigger Automator's error alert)
+    if wm_path.suffix.lower() not in (".svg", ".png"):
+        notify("The watermark must be an SVG or PNG image.")
+        return 0
 
     if wm_path.suffix.lower() == ".svg":
         if not has_valid_viewbox(wm_path):
