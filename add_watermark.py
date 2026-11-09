@@ -10,11 +10,14 @@ passes the Finder-selected image files as command-line arguments.
 
 Workflow:
     1. Receive image file paths as CLI arguments (from the Finder selection).
-    2. Show a single native macOS open panel to pick the watermark file
-       (SVG preferred, PNG24 accepted), with one fixed "Resize for sharing"
-       checkbox below the file list. Cancel exits silently.
-       The panel is used exactly as Apple intends (static accessory view, no
-       timers, no delegate, no live relayout), so no click gets lost.
+    2. Show the "Add Watermark" window (AddWatermark.app, a small native app
+       built from AddWatermarkApp/ with build_app.sh): last used watermark with
+       a 128 px preview, image count, "Resize for Sharing" switch,
+       "Change Watermark..." button, Cancel / Submit. Cancel exits silently.
+       Fallback when the app is missing or fails (or WM_FORCE_LIST=1): one
+       native list dialog, shown by the Finder, with every SVG/PNG of
+       WATERMARK_DIR offered twice ("resize for sharing" / "full size") plus
+       "Other file..." (see run_dialog).
     3. If the watermark is an SVG, validate it contains a `viewBox` (or
        `viewbox`) attribute -- abort otherwise.
     4. For each image: optionally downscale it (longer side capped at
@@ -39,6 +42,8 @@ Requires on the Mac running this:
     - rsvg-convert, only for SVG watermarks (brew install librsvg)
 """
 
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -79,6 +84,11 @@ RESIZE_SUFFIX = "_s"                      # appended to the watermark suffix whe
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATERMARK_DIR = SCRIPT_DIR / "watermarks"
 LAST_CHOICE_FILE = SCRIPT_DIR / ".last_choice"   # preselected item next time (git-ignored)
+
+# Native window (see AddWatermarkApp/, built with build_app.sh). When the app is
+# missing, fails, or WM_FORCE_LIST=1 is set, the list dialog above is used instead.
+APP_PATH = SCRIPT_DIR / "AddWatermark.app"
+LAST_APP_FILE = SCRIPT_DIR / ".last_watermark.json"  # watermark + switch state (git-ignored)
 ORDER_PREFIX_RE = re.compile(r"^\d+[\s._-]+")
 LABEL_RESIZE = "   \u2014  resize for sharing"
 LABEL_FULL = "   \u2014  full size"
@@ -150,6 +160,21 @@ def notify(message: str, title: str = "Watermark batch") -> None:
     run_dialog(f"display dialog {_as_literal(message)} with title {_as_literal(title)} "
                "buttons {\"OK\"} default button \"OK\"")
 
+def announce(message: str, title: str) -> None:
+    """Success summary as a macOS notification posted by this script's own app.
+
+    (An AppleScript "display notification" would come from Script Editor, and
+    clicking it would open Script Editor.) If the app can't post it (missing,
+    or notifications refused), a dialog that closes itself after a few seconds
+    is shown instead. Errors still get a regular dialog (notify).
+    """
+    data = run_app(["--notify-title", title, "--notify-body", message])
+    if data is not None and data.get("posted"):
+        return
+    run_dialog(f"display dialog {_as_literal(message)} with title {_as_literal(title)} "
+               "buttons {\"OK\"} default button \"OK\" giving up after 3")
+
+
 
 def display_name(wm_path: Path) -> str:
     """File name without an ordering prefix: "1 signature.svg" -> "signature.svg"."""
@@ -180,6 +205,77 @@ def save_last_choice(label: str) -> None:
 
 
 def choose_watermark_and_options(count: int) -> tuple[bool, Optional[Path], Options]:
+    """Native window when available, otherwise the list dialog. Returns (cancelled, path, options)."""
+    if APP_PATH.is_dir() and os.environ.get("WM_FORCE_LIST") != "1":
+        result = choose_with_app(count)
+        if result is not None:
+            return result
+    return choose_from_list(count)
+
+
+def read_last_app_choice() -> dict:
+    try:
+        data = json.loads(LAST_APP_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def run_app(extra_args: list[str]) -> Optional[dict]:
+    """Run AddWatermark.app with these arguments and return its JSON answer; None if it could not run."""
+    if not APP_PATH.is_dir() or os.environ.get("WM_FORCE_LIST") == "1":
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "result.json"
+        cmd = ["open", "-W", "-n", str(APP_PATH), "--args", *extra_args, "--out", str(out)]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            data = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            print(f"{APP_PATH.name} gave no answer (exit {result.returncode}): "
+                  f"{result.stderr.strip()}", file=sys.stderr)
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def choose_with_app(count: int) -> Optional[tuple[bool, Optional[Path], Options]]:
+    """Show AddWatermark.app and read its JSON answer; None if the app gave no answer."""
+    last = read_last_app_choice()
+    initial = last.get("path") if isinstance(last.get("path"), str) and Path(last["path"]).is_file() else ""
+    if not initial:
+        watermarks = list_watermarks()
+        initial = str(watermarks[0]) if watermarks else ""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "result.json"
+        # "open -W" launches it as a regular app (so it gets the focus) and waits until it quits.
+        cmd = ["open", "-W", "-n", str(APP_PATH), "--args",
+               "--watermark", initial,
+               "--count", str(count),
+               "--resize", "1" if last.get("resize", True) else "0",
+               "--resize-max", str(RESIZE_MAX_LONG_SIDE),
+               "--dir", str(WATERMARK_DIR),
+               "--out", str(out)]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            data = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            print(f"AddWatermark.app gave no answer (exit {result.returncode}): "
+                  f"{result.stderr.strip()}", file=sys.stderr)
+            return None
+    if data.get("cancelled"):
+        return True, None, Options()
+    path = Path(data["path"]) if data.get("path") else None
+    options = Options(resize=bool(data.get("resize", True)))
+    if path is not None:
+        try:
+            LAST_APP_FILE.write_text(json.dumps({"path": str(path), "resize": options.resize}),
+                                     encoding="utf-8")
+        except OSError:
+            pass  # not critical: the first watermark of the folder is used next time
+    return False, path, options
+
+
+def choose_from_list(count: int) -> tuple[bool, Optional[Path], Options]:
     """One native list: each watermark twice (resized / full size), plus "Other file...".
 
     Returns (cancelled, path, options).
@@ -513,8 +609,9 @@ def main() -> int:
 
     summary = f"{len(done)} image(s) processed successfully."
     if errors:
-        summary += "\n\nErrors:\n" + "\n".join(errors)
-    notify(summary)
+        notify(summary + "\n\nErrors:\n" + "\n".join(errors))
+    else:
+        announce(summary, "Add Copyrights Watermark to Image")
     return 0  # errors (if any) are already listed in the summary dialog
 
 
